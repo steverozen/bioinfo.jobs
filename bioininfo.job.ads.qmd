@@ -1,0 +1,95 @@
+---
+title: "Untitled"
+format: html
+editor: visual
+---
+
+## Experience keywords in bioinformatics.org job ads
+
+November 22, 2023
+
+## Getting the job ads
+
+I got the job ads from gmail, using Google Takeout. The job ads were posted from November 16. 2015 and November 13, 2023. The emails are in bioinformatics.jobs.mbox. Each ad was emailed twice.
+
+```{r}
+
+library(mboxr)
+library(tokenizers)
+library(stopwords)
+all_ads <- mboxr::read_mbox("bioinformatics-jobs.mbox")
+
+
+```
+
+Variable all_ads will be a tibble with column names as follows.
+
+```{r}
+colnames(all_ads)
+dim(all_ads)
+```
+
+Remove emails with duplicate content, and remove uninformative columns.
+
+```{r}
+ads <- dplyr::arrange(all_ads, date)
+ads <- dplyr::distinct(all_ads, content, .keep_all = TRUE)
+ads <- mutate(ads, 
+              to = NULL, from = NULL, cc = NULL, 
+              in_reply_to = NULL, references = NULL, 
+              num_discussants = NULL,
+              message_ID = NULL,
+              weekday = NULL)
+```
+
+Look for some key strings in the content column
+
+```{r}
+
+# ads <- mutate(ads, has_ML = grepl("machine learning", content))
+# ads <- mutate(ads, has_DL = grepl("deep learning", content))
+
+
+```
+
+Hmmm, let's try a tokenizer first....
+
+```{r}
+cc <- dplyr::pull(ads, content)
+cct <- lapply(cc, tokenize_words, stopwords = stopwords::stopwords("en"))
+```
+
+Not immediately useful.
+
+```{r}
+simplify_subject <- function(xx) {
+  rr <- gsub("[BiO Jobs] Opportunity: ", "", xx, fixed = TRUE)
+  qq <- sub("(.*) --.*$", "\\1", rr)
+  return(qq)
+}
+
+test <- lapply(pull(ads, subject), simplify_subject)
+
+adsx <- mutate(ads, subject = simplify_subject(subject))
+
+simplify_content <- function(x) {
+  rr <- sub(".*\\[BiO Jobs\\] Opportunity: ", "", x)
+  qq <- sub("\n\n-+\nThis is a copy of a message posted on the Bioinformatics.*$", "\\1", rr)
+  rr <- sub(".*posted on .*\n-+\n", "", qq)
+  return(rr)
+}
+
+test <- lapply(pull(adsx, content), simplify_content)
+
+adsx <- mutate(adsx, content = simplify_content(content))
+
+```
+
+You can add options to executable code like this
+
+```{r}
+#| echo: false
+2 * 2
+```
+
+The `echo: false` option disables the printing of code (only output is displayed).
