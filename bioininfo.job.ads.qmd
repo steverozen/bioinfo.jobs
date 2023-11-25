@@ -17,6 +17,12 @@ I got the job ads from gmail, using Google Takeout. The job ads were posted from
 library(mboxr)
 library(tokenizers)
 library(stopwords)
+library(magrittr)
+library(lubridate)
+library(ggplot2)
+library(dplyr)
+library(data.table)
+library(gridExtra)
 all_ads <- mboxr::read_mbox("bioinformatics-jobs.mbox")
 
 
@@ -38,7 +44,6 @@ ads <- mutate(ads,
               to = NULL, from = NULL, cc = NULL, 
               in_reply_to = NULL, references = NULL, 
               num_discussants = NULL,
-              message_ID = NULL,
               weekday = NULL)
 ```
 
@@ -55,8 +60,8 @@ Look for some key strings in the content column
 Hmmm, let's try a tokenizer first....
 
 ```{r}
-cc <- dplyr::pull(ads, content)
-cct <- lapply(cc, tokenize_words, stopwords = stopwords::stopwords("en"))
+# cc <- dplyr::pull(ads, content)
+# cct <- lapply(cc, tokenize_words, stopwords = stopwords::stopwords("en"))
 ```
 
 Not immediately useful.
@@ -68,7 +73,7 @@ simplify_subject <- function(xx) {
   return(qq)
 }
 
-test <- lapply(pull(ads, subject), simplify_subject)
+# test <- lapply(pull(ads, subject), simplify_subject)
 
 adsx <- mutate(ads, subject = simplify_subject(subject))
 
@@ -79,17 +84,246 @@ simplify_content <- function(x) {
   return(rr)
 }
 
-test <- lapply(pull(adsx, content), simplify_content)
+# test <- lapply(pull(adsx, content), simplify_content)
 
 adsx <- mutate(adsx, content = simplify_content(content))
 
+adsx <- mutate(adsx, reqs = gsub("\n", " ", sub("HOW TO APPLY:.*", "", sub("BACKGROUND:.*REQUIREMENTS:", "", content))))
+
 ```
 
-You can add options to executable code like this
+Write an intermediate table for Python to read. This table is used below.
 
 ```{r}
-#| echo: false
-2 * 2
+adsx2 <- mutate(adsx, content = gsub("\n", "", content))
+data.table::fwrite(x = adsx2, file = "intermediate1.csv")
+rm(adsx2)
 ```
 
-The `echo: false` option disables the printing of code (only output is displayed).
+
+```{r}
+mutate(adsx, year = lubridate::year(date)) %>%
+  mutate(month = lubridate::month(date)) -> tt
+```
+
+Functions to pull out specific keywords and combinations of keywords
+
+```{r}
+
+ml_or_ai <- function(x) {
+  grepl("machine learning", x, ignore.case = TRUE) |
+    grepl("\\sML\\s", x) |
+    grepl("\\sAI\\s", x) |
+    grepl("deep learning", x, ignore.case = TRUE) |
+    grepl("artificial intelligence", x, ignore.case = TRUE)
+}
+
+prog <- function(x) {
+  grepl("programming", x, ignore.case = TRUE)
+}
+
+pyth <- function(x){
+  grepl("python", x, ignore.case = TRUE)
+}
+
+rprog <- function(x) {
+  grepl(" R ", x, fixed = TRUE)
+}
+
+scell <- function(x) {
+  grepl("single cell", x, ignore.case = TRUE)
+}
+
+
+```
+
+Add the columns that indicate whether given regular expressions are present in column reqs.
+
+```{r}
+
+mutate(tt, ml_or_ai = ml_or_ai(reqs)) %>%
+  mutate(programming = prog(reqs)) %>%
+  mutate(python = pyth(content)) %>%
+  mutate(scell = grepl("single cell", reqs, ignore.case = TRUE)) %>% 
+  mutate(dl    = grepl("deep learning", reqs, ignore.case = TRUE)) %>%
+  mutate(prog  = grepl("programming",    reqs, ignore.case = TRUE)) %>%
+  mutate(gpu   = grepl("gpu", content, ignore.case = TRUE)) %>%
+  mutate(spatial = grepl("spatial", reqs, ignore.case = TRUE)) %>%
+  mutate(cloud  = grepl("cloud", content, ignore.case = TRUE)) %>%
+  mutate(r = rprog(reqs)) -> ttt
+
+
+```
+
+Get monthly proportions of TRUE values for those new columns.
+
+```{r}
+ttt %>% group_by(year, month) %>%
+  summarize(prop_ml = mean(ml_or_ai, na.rm = TRUE), 
+            prop_python = mean(python),
+            prop_r      = mean(r),
+            prop_scell  = mean(scell, na.rm = TRUE),
+            prop_dl     = mean(dl),
+            prop_gpu    = mean(gpu),
+            prop_prog   = mean(programming),
+            prop_spatial = mean(spatial),
+            prop_cloud   = mean(cloud),
+            num_ml_or_ai = sum(ml_or_ai)) -> t_sum # %>%
+  # ungroup() %>%
+  # distinct(year, month, prop_ml) -> foo
+```
+
+```{r}
+
+plotbars <- function(dd, to_plot, to_plot_string) {
+  dd %>% arrange(year, month) %>%
+    ggplot(aes(x = interaction(year, month), y = pull(dd, to_plot))) +
+    geom_bar(stat = "identity", fill = "blue") +
+    labs(
+      x = "Year and Month",
+      y = paste("Proportion of ads\nwith", to_plot_string),
+      title = ""
+    ) +
+    theme(axis.text.x = element_blank()) -> gg
+  return(gg)
+}
+```
+
+```{r}
+pdf(file = "proportion_by_month.pdf", paper = "letter")
+grid.arrange(
+  plotbars(t_sum, "prop_python", "Python"),
+  plotbars(t_sum, "prop_r", "R"),
+  plotbars(t_sum, "prop_ml", "machine learning"),
+  nrow = 3)
+grid.arrange(
+  plotbars(t_sum, "prop_dl", "deep learning"),
+  plotbars(t_sum, "prop_prog", "programming"),
+  plotbars(t_sum, "prop_gpu", "GPU"),
+  nrow = 3)
+grid.arrange(
+  plotbars(t_sum, "prop_scell", "single cell"),
+  plotbars(t_sum, "prop_spatial", "spatial"),
+  plotbars(t_sum, "prop_cloud", "cloud"),
+  nrow = 3
+)
+dev.off()
+
+# zz <- glm(dl ~ date, family = binomial, data = ttt)
+```
+
+
+
+```{python}
+import pandas as pd
+
+df = pd.read_csv("intermediate1.csv")
+
+print(df.head(3))
+
+```
+
+```{python}
+
+from openai import OpenAI
+client = OpenAI()
+
+
+
+def ask_gpt(req, question):
+  prompt = question + req
+  completion = client.chat.completions.create(
+  model="gpt-4",
+  messages=[
+    {"role": "system", "content": "You are an employment headhunter skilled at reading job descripitons to understand the qualifications required."},
+    {"role": "user", "content": prompt}
+    ]
+    )
+  return completion.choices[0].message
+
+
+
+```
+
+```{python}
+question = "Answer yes or no: is machine learning, AI or, deep learning a requirement of this job: "
+test_req = "We are looking for a motivated person with at least 2 years professional experience and a desire to work in an international research environment. Applicants should have a degree in Computer Science, Software Engineering or equivalent experience. A background in bio-computing or structural biology software development will be highly appreciated. Candidates should have demonstrable experience with object orientated PHP, HTML, JQuery/AngularJS and relational databases. Experience with frameworks, testing and behavior driven development as well as basic skills in system administration (Linux) and networking will be highly appreciated. The ability to work within a team and communicate with users is essential. Fluency in English is mandatory."
+
+ask_gpt(test_req, question)
+
+question2 = "What specific programming languages are required for this position; return as a simiple comma-separated list that I can parse later "
+
+ask_gpt(test_req, question2)
+
+```
+
+```{python}
+zz = df.iloc[6:8].copy()
+
+import time
+import pdb
+
+def ask_gpt_ml(req):
+  myq = "Answer yes or no: is machine learning, AI, or deep learning a possible requirement of this job: "
+  return ask_gpt(req, myq).content
+
+def one_row(row):
+  time.sleep(5)
+  res1 = ask_gpt_ml(row['reqs'])
+  # res1 = row['reqs']
+  id   = row['message_ID']
+  print(id, res1)
+  with open('intermediate2.csv', 'a') as file:
+    file.write(f"{id},{res1}\n")
+
+# zz.apply(one_row, axis=1)
+
+with open('intermediate2.csv', 'w') as file:
+  file.write("message_ID,gpt4_ml\n")
+
+df.apply(one_row, axis=1)
+
+df.iloc[30:].apply(one_row, axis = 1)
+
+
+```
+
+
+```{python}
+
+df.to_csv('intermediate2.csv', index=False)
+
+from openai import OpenAI
+client = OpenAI()
+
+
+completion = client.chat.completions.create(
+  model="gpt-3.5-turbo",
+  messages=[
+    {"role": "system", "content": "You are a poetic assistant, skilled in explaining complex programming concepts with creative flair."},
+    {"role": "user", "content": "Compose a poem that explains the concept of recursion in programming."}
+  ]
+)
+
+print(completion.choices[0].message)
+
+
+
+```
+
+```{python}
+
+from openai import OpenAI
+client = OpenAI()
+
+completion = client.chat.completions.create(
+  model="gpt-4",
+  messages=[
+    {"role": "system", "content": "You are an employment headhunter skilled at reading job descripitons to understand the qualifications required."},
+    {"role": "user", "content": "Answer yes or no: is machine learning a requirement of this job: REQUIREMENTS:\nWe are looking for a motivated person with at least 2 years professional experience and a desire to work in an international research environment. Applicants should have a degree in Computer Science, Software Engineering or equivalent experience. A background in bio-computing or structural biology software development will be highly appreciated. Candidates should have demonstrable experience with object orientated PHP, HTML, JQuery/AngularJS and relational databases. Experience with frameworks, testing and behavior driven development as well as basic skills in system administration (Linux) and networking will be highly appreciated. The ability to work within a team and communicate with users is essential. Fluency in English is mandatory."}
+  ]
+)
+
+print(completion.choices[0].message)
+
+```
